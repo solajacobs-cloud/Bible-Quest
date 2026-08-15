@@ -3,10 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Bible Quest",
-  description: "A Bible study game across KJV, World English Bible, and Yoruba Bibeli Mimo.",
-  other: {
-    "codex-preview": "development",
-  },
+  description: "A public Bible study game with KJV, World English Bible, and Bibeli Mimo study rounds.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

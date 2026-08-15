@@ -13,7 +13,17 @@ type GameQuestion = {
   correct: number;
   explanation: string;
   verseKey?: VerseKey;
+  hint?: string;
 };
+type ReviewItem = {
+  prompt: string;
+  reference?: string;
+  selected: string;
+  correct: string;
+  isCorrect: boolean;
+  explanation: string;
+};
+type Difficulty = "Easy" | "Medium" | "Hard";
 
 const versions = [
   { short: "KJV", name: "King James Version", language: "English" },
@@ -21,12 +31,18 @@ const versions = [
   { short: "BM", name: "Bíbélì Mímọ́", language: "Yorùbá" },
 ];
 
-const modes: { id: ModeId; number: string; icon: string; name: string; description: string }[] = [
-  { id: "translation", number: "01", icon: "Aa", name: "Translation Match", description: "Match the same verse across English and Yorùbá translations." },
-  { id: "trivia", number: "02", icon: "?", name: "Bible Trivia", description: "Test your knowledge of people, places, events, and teachings." },
-  { id: "speaker", number: "03", icon: "“”", name: "Who Said It?", description: "Identify the speaker behind memorable words in Scripture." },
-  { id: "order", number: "04", icon: "123", name: "Verse Order", description: "Choose the correct order for familiar verses from the Bible." },
+const modes: { id: ModeId; number: string; icon: string; name: string; description: string; badge: string }[] = [
+  { id: "translation", number: "01", icon: "Aa", name: "Translation Match", description: "Match the same verse across English and Yorùbá translations.", badge: "Language" },
+  { id: "trivia", number: "02", icon: "?", name: "Bible Trivia", description: "Test your knowledge of people, places, events, and teachings.", badge: "Knowledge" },
+  { id: "speaker", number: "03", icon: "“”", name: "Who Said It?", description: "Identify the speaker behind memorable words in Scripture.", badge: "Characters" },
+  { id: "order", number: "04", icon: "123", name: "Verse Order", description: "Choose the correct order for familiar verses from the Bible.", badge: "Memory" },
 ];
+
+const difficultyRules: Record<Difficulty, { lives: number; points: number; hintPenalty: number; label: string }> = {
+  Easy: { lives: 5, points: 100, hintPenalty: 20, label: "5 lives, gentle scoring" },
+  Medium: { lives: 4, points: 150, hintPenalty: 30, label: "4 lives, stronger scoring" },
+  Hard: { lives: 3, points: 220, hintPenalty: 50, label: "3 lives, highest reward" },
+};
 
 const verseLibrary = {
   john316: {
@@ -152,13 +168,19 @@ function shuffled<T>(items: T[]) {
 export default function Home() {
   const [screen, setScreen] = useState<"home" | "game" | "result">("home");
   const [selectedMode, setSelectedMode] = useState<ModeId>("translation");
-  const [difficulty, setDifficulty] = useState("Easy");
+  const [difficulty, setDifficulty] = useState<Difficulty>("Easy");
   const [rounds, setRounds] = useState(10);
   const [questions, setQuestions] = useState<GameQuestion[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const [answered, setAnswered] = useState(false);
   const [score, setScore] = useState(0);
+  const [lives, setLives] = useState(difficultyRules.Easy.lives);
+  const [streak, setStreak] = useState(0);
+  const [bestStreak, setBestStreak] = useState(0);
+  const [hintsUsed, setHintsUsed] = useState(0);
+  const [eliminatedAnswers, setEliminatedAnswers] = useState<number[]>([]);
+  const [review, setReview] = useState<ReviewItem[]>([]);
   const [stats, setStats] = useState<Stats>(emptyStats);
   const [activeVersion, setActiveVersion] = useState<"KJV" | "WEB" | "BM">("KJV");
   const [soundOn, setSoundOn] = useState(true);
@@ -172,7 +194,9 @@ export default function Home() {
 
   const currentQuestion = questions[questionIndex];
   const currentMode = useMemo(() => modes.find((mode) => mode.id === selectedMode) ?? modes[0], [selectedMode]);
-  const percentage = questions.length ? Math.round((score / questions.length) * 100) : 0;
+  const correctCount = review.filter((item) => item.isCorrect).length;
+  const accuracy = review.length ? Math.round((correctCount / review.length) * 100) : 0;
+  const activeRules = difficultyRules[difficulty];
 
   function startGame() {
     const pool = shuffled(questionBank[selectedMode]);
@@ -182,6 +206,12 @@ export default function Home() {
     setSelectedAnswer(null);
     setAnswered(false);
     setScore(0);
+    setLives(activeRules.lives);
+    setStreak(0);
+    setBestStreak(0);
+    setHintsUsed(0);
+    setEliminatedAnswers([]);
+    setReview([]);
     setScreen("game");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -190,17 +220,38 @@ export default function Home() {
     if (answered) return;
     setSelectedAnswer(index);
     setAnswered(true);
-    if (index === currentQuestion.correct) setScore((value) => value + 1);
+    const isCorrect = index === currentQuestion.correct;
+    const nextStreak = isCorrect ? streak + 1 : 0;
+    const streakBonus = isCorrect ? Math.min(streak, 4) * 25 : 0;
+    if (isCorrect) {
+      setScore((value) => value + activeRules.points + streakBonus);
+      setStreak(nextStreak);
+      setBestStreak((value) => Math.max(value, nextStreak));
+    } else {
+      setLives((value) => Math.max(0, value - 1));
+      setStreak(0);
+    }
+    setReview((items) => [
+      ...items,
+      {
+        prompt: currentQuestion.prompt,
+        reference: currentQuestion.reference,
+        selected: currentQuestion.options[index],
+        correct: currentQuestion.options[currentQuestion.correct],
+        isCorrect,
+        explanation: currentQuestion.explanation,
+      },
+    ]);
   }
 
   function finishGame(finalScore: number) {
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-    const newPercentage = Math.round((finalScore / questions.length) * 100);
+    const newPercentage = accuracy;
     const nextStats: Stats = {
       games: stats.games + 1,
       bestScore: Math.max(stats.bestScore, newPercentage),
-      totalCorrect: stats.totalCorrect + finalScore,
+      totalCorrect: stats.totalCorrect + correctCount,
       streak: stats.lastPlayed === today ? stats.streak : stats.lastPlayed === yesterday ? stats.streak + 1 : 1,
       lastPlayed: today,
     };
@@ -211,19 +262,32 @@ export default function Home() {
   }
 
   function nextQuestion() {
-    if (questionIndex === questions.length - 1) {
+    if (questionIndex === questions.length - 1 || lives === 0) {
       finishGame(score);
       return;
     }
     setQuestionIndex((value) => value + 1);
     setSelectedAnswer(null);
     setAnswered(false);
+    setEliminatedAnswers([]);
+  }
+
+  function useHint() {
+    if (answered || eliminatedAnswers.length || !currentQuestion) return;
+    const wrongAnswers = currentQuestion.options
+      .map((_, index) => index)
+      .filter((index) => index !== currentQuestion.correct);
+    const removeCount = difficulty === "Hard" ? 1 : 2;
+    setEliminatedAnswers(shuffled(wrongAnswers).slice(0, removeCount));
+    setHintsUsed((value) => value + 1);
+    setScore((value) => Math.max(0, value - activeRules.hintPenalty));
   }
 
   function goHome() {
     setScreen("home");
     setSelectedAnswer(null);
     setAnswered(false);
+    setEliminatedAnswers([]);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -237,10 +301,16 @@ export default function Home() {
             <span><strong>Bible Quest</strong></span>
           </button>
           <div className="gameModeName"><span>{currentMode.icon}</span>{currentMode.name}</div>
-          <div className="scoreBox"><small>Score</small><strong>{score * 100}</strong></div>
+          <div className="scoreBox"><small>Score</small><strong>{score}</strong></div>
         </header>
         <div className="progressTrack"><span style={{ width: `${progress}%` }} /></div>
         <section className="questionShell">
+          <div className="gameHud" aria-label="Round status">
+            <div><span>Lives</span><strong>{"♥".repeat(lives)}{"♡".repeat(activeRules.lives - lives)}</strong></div>
+            <div><span>Streak</span><strong>{streak}</strong></div>
+            <div><span>Hints</span><strong>{hintsUsed}</strong></div>
+            <div><span>Points</span><strong>{activeRules.points}</strong></div>
+          </div>
           <div className="questionTopline">
             <span>Question {questionIndex + 1} of {questions.length}</span>
             <span>{difficulty} level</span>
@@ -258,12 +328,17 @@ export default function Home() {
               const classNames = ["answerButton"];
               if (answered && index === currentQuestion.correct) classNames.push("correctAnswer");
               if (answered && index === selectedAnswer && index !== currentQuestion.correct) classNames.push("wrongAnswer");
+              if (eliminatedAnswers.includes(index)) classNames.push("eliminatedAnswer");
               return (
-                <button key={`${questionIndex}-${index}`} className={classNames.join(" ")} onClick={() => checkAnswer(index)} disabled={answered}>
+                <button key={`${questionIndex}-${index}`} className={classNames.join(" ")} onClick={() => checkAnswer(index)} disabled={answered || eliminatedAnswers.includes(index)}>
                   <span>{String.fromCharCode(65 + index)}</span><b>{option}</b>
                 </button>
               );
             })}
+          </div>
+          <div className="questionTools">
+            <button onClick={useHint} disabled={answered || eliminatedAnswers.length > 0}>Use hint <span>-{activeRules.hintPenalty}</span></button>
+            <p>{eliminatedAnswers.length ? "Some wrong answers have been removed." : currentQuestion.hint ?? `Think about ${currentQuestion.reference ?? "the Bible context"} before answering.`}</p>
           </div>
           {answered && (
             <div className={`feedback ${selectedAnswer === currentQuestion.correct ? "feedbackCorrect" : "feedbackWrong"}`}>
@@ -271,7 +346,7 @@ export default function Home() {
                 <strong>{selectedAnswer === currentQuestion.correct ? "Correct. Well done!" : "Not quite. Keep learning."}</strong>
                 <p>{currentQuestion.explanation}</p>
               </div>
-              <button onClick={nextQuestion}>{questionIndex === questions.length - 1 ? "See results" : "Next question"}<span>→</span></button>
+              <button onClick={nextQuestion}>{questionIndex === questions.length - 1 || lives === 0 ? "See results" : "Next question"}<span>→</span></button>
             </div>
           )}
           {answered && currentQuestion.verseKey && (
@@ -295,15 +370,25 @@ export default function Home() {
         <div className="resultCard">
           <button className="resultClose" onClick={goHome} aria-label="Return home">×</button>
           <p className="eyebrow">Quest complete</p>
-          <div className="resultRing" style={{ "--score": `${percentage * 3.6}deg` } as React.CSSProperties}>
-            <div><strong>{percentage}%</strong><span>{score} of {questions.length} correct</span></div>
+          <div className="resultRing" style={{ "--score": `${accuracy * 3.6}deg` } as React.CSSProperties}>
+            <div><strong>{accuracy}%</strong><span>{correctCount} of {questions.length} correct</span></div>
           </div>
-          <h1>{percentage >= 80 ? "Excellent knowledge!" : percentage >= 60 ? "A strong beginning." : "Every round helps you grow."}</h1>
-          <p>{percentage >= 80 ? "You know these passages well. Try a harder level for your next quest." : "Review the explanations, return to the Word, and try the round again."}</p>
+          <h1>{accuracy >= 80 ? "Excellent knowledge!" : accuracy >= 60 ? "A strong beginning." : "Every round helps you grow."}</h1>
+          <p>{accuracy >= 80 ? "You know these passages well. Try a harder level for your next quest." : "Review the explanations, return to the Word, and try the round again."}</p>
           <div className="resultStats">
-            <div><strong>{score * 100}</strong><span>Points earned</span></div>
+            <div><strong>{score}</strong><span>Points earned</span></div>
             <div><strong>{stats.bestScore}%</strong><span>Personal best</span></div>
-            <div><strong>{stats.streak}</strong><span>Day streak</span></div>
+            <div><strong>{bestStreak}</strong><span>Best streak</span></div>
+          </div>
+          <div className="reviewPanel">
+            <span>Round review</span>
+            {review.slice(-5).map((item, index) => (
+              <article key={`${item.prompt}-${index}`}>
+                <strong>{item.isCorrect ? "Correct" : "Review"}</strong>
+                <p>{item.prompt}</p>
+                <small>{item.isCorrect ? item.correct : `Correct answer: ${item.correct}`}</small>
+              </article>
+            ))}
           </div>
           <div className="resultActions">
             <button className="secondaryButton" onClick={goHome}>Change mode</button>
@@ -370,6 +455,7 @@ export default function Home() {
               <span className="modeIcon">{mode.icon}</span>
               <h3>{mode.name}</h3>
               <p>{mode.description}</p>
+              <small className="modeBadge">{mode.badge}</small>
               {selectedMode === mode.id && <span className="modeTag">Selected</span>}
             </button>
           ))}
@@ -378,8 +464,9 @@ export default function Home() {
           <div>
             <span className="setupLabel">Difficulty</span>
             <div className="segmented" role="group" aria-label="Choose difficulty">
-              {["Easy", "Medium", "Hard"].map((level) => <button key={level} className={difficulty === level ? "selected" : ""} onClick={() => setDifficulty(level)}>{level}</button>)}
+              {(["Easy", "Medium", "Hard"] as const).map((level) => <button key={level} className={difficulty === level ? "selected" : ""} onClick={() => setDifficulty(level)}>{level}</button>)}
             </div>
+            <small className="setupHint">{activeRules.label}</small>
           </div>
           <div>
             <span className="setupLabel">Questions</span>
@@ -388,6 +475,19 @@ export default function Home() {
             </div>
           </div>
           <button className="primaryButton" onClick={startGame}>Begin quest <span>→</span></button>
+        </div>
+      </section>
+
+      <section className="rulesSection" aria-label="How Bible Quest works">
+        <div>
+          <p className="eyebrow">Game rules</p>
+          <h2>Study first. Score second.</h2>
+        </div>
+        <div className="rulesGrid">
+          <article><strong>1</strong><span>Pick a mode</span><p>Choose translation, trivia, speaker, or verse order rounds.</p></article>
+          <article><strong>2</strong><span>Protect your lives</span><p>Wrong answers cost one life. Hard mode gives fewer lives but more points.</p></article>
+          <article><strong>3</strong><span>Use hints wisely</span><p>Hints remove wrong options, but they reduce your score for that round.</p></article>
+          <article><strong>4</strong><span>Review the Word</span><p>After each answer, compare the explanation and study the related passage.</p></article>
         </div>
       </section>
 
