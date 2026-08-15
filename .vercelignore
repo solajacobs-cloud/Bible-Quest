@@ -1,0 +1,16 @@
+upload
+.openai
+.sites-runtime
+.wrangler
+dist
+.next
+node_modules
+.npm-cache
+worker
+build
+scripts
+tests
+examples
+drizzle
+db
+*.log
